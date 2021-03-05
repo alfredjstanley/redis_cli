@@ -1,36 +1,81 @@
+use std::string;
+
 use async_std::{
+    channel::RecvError,
     io::{self, prelude::WriteExt},
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
     prelude::*,
 };
 
 #[async_std::main]
 async fn main() -> io::Result<()> {
-    let mut stream = TcpStream::connect("localhost:6379").await?;
-    let mut buffer = vec![];
-    let command = RespValue::Array(vec![RespValue::BulkString(b"PING".to_vec())]);
-    command.serialize(&mut buffer);
-    stream.write_all(&buffer).await?;
-    let mut buffer = vec![0; 1024];
-    let bytes_read = stream.read(&mut buffer).await?;
-    // println!("{:?}", std::str::from_utf8(&buffer[..bytes_read]));
-    println!("{:?}", parse_response(&buffer[0..bytes_read]));
+    let mut client = Client::new("localhost:6379").await?;
+    client.set("alfred".into(), "Kollam".into()).await.unwrap();
+    println!("{:?}", client.get("alfred".into()).await.unwrap());
+
     Ok(())
 }
 
-fn parse_response(buffer: &[u8]) -> Result<&str, String> {
+fn parse_response(buffer: &[u8]) -> Result<&str, Error> {
     if buffer.is_empty() {
-        return Err("Empty buffer".into());
+        return Err(Error {});
     }
 
     if buffer[0] == ('-' as u8) {
-        return Err(format!(
-            "Error Response: {:?}",
-            &buffer[1..buffer.len() - 2]
-        ));
+        return Err(Error {});
     }
 
     Ok(std::str::from_utf8(&buffer[1..buffer.len() - 2]).unwrap())
+}
+
+struct Client {
+    stream: TcpStream,
+}
+
+impl Client {
+    async fn new<A: ToSocketAddrs>(addr: A) -> Result<Client, io::Error> {
+        let stream = TcpStream::connect("localhost:6379").await?;
+        Ok(Client { stream })
+    }
+}
+
+impl Client {
+    async fn get(&mut self, key: String) -> Result<String, Error> {
+        let command = RespValue::Array(vec![
+            RespValue::BulkString(b"GET".to_vec()),
+            RespValue::BulkString(key.into_bytes()),
+        ]);
+        let mut buffer = vec![];
+        command.serialize(&mut buffer);
+        self.stream.write_all(&buffer).await?;
+
+        let bytes_read = self.stream.read(&mut buffer).await?;
+        let resp = parse_response(&buffer[..bytes_read])?;
+        Ok(resp.to_owned())
+    }
+
+    async fn set(&mut self, key: String, value: String) -> Result<(), Error> {
+        let command = RespValue::Array(vec![
+            RespValue::BulkString(b"SET".to_vec()),
+            RespValue::BulkString(key.into_bytes()),
+            RespValue::BulkString(value.into_bytes()),
+        ]);
+        let mut buffer = vec![];
+        command.serialize(&mut buffer);
+        self.stream.write_all(&buffer).await?;
+        let bytes_read = self.stream.read(&mut buffer).await?;
+        parse_response(&buffer[..bytes_read])?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct Error {}
+
+impl std::convert::From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Error {}
+    }
 }
 
 enum RespValue {
